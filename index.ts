@@ -72,6 +72,8 @@ const SUPPORTED_TOKENS: { [key: string]: TokenConfig } = {
 // 合约地址配置
 const POOL_ADDRESS = "0xDC17C27Ae8bE831AF07CC38C02930007060020F4";
 
+const YOUR_RPC_URL = "http://localhost:8545";
+
 // 辅助函数 - 根据token获取精度
 function getTokenDecimals(symbol: string): number {
   return SUPPORTED_TOKENS[symbol]?.decimals || 18;
@@ -92,7 +94,7 @@ let usdcContract: Contract;
 // 初始化以太坊连接
 async function initEthers() {
   try {
-    provider = new JsonRpcProvider("YOUR_RPC_URL");
+    provider = new JsonRpcProvider(YOUR_RPC_URL);
     signer = await provider.getSigner();
     poolContract = new Contract(POOL_ADDRESS, POOL_ABI, signer);
     wethContract = new Contract(getTokenAddress('WETH'), ERC20_ABI, signer);
