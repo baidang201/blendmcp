@@ -70,7 +70,7 @@ const SUPPORTED_TOKENS: { [key: string]: TokenConfig } = {
 };
 
 // 合约地址配置
-const POOL_ADDRESS = "0xDC17C27Ae8bE831AF07CC38C02930007060020F4";
+const POOL_ADDRESS = "0x0E801D84Fa97b50751Dbf25036d067dCf18858bF";
 
 const YOUR_RPC_URL = "http://localhost:8545";
 
@@ -121,17 +121,25 @@ server.tool("supply",
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
       
+      // 检查用户余额
+      const userBalance = await tokenContract.balanceOf(userAddress);
+      const amountToSupply = ethers.parseUnits(amount, tokenConfig.decimals);
+      if (userBalance < amountToSupply) {
+        throw new Error(`余额不足,需要 ${amount} ${token},当前余额: ${ethers.formatUnits(userBalance, tokenConfig.decimals)} ${token}`);
+      }
+      
       // 检查授权
       const allowance = await tokenContract.allowance(userAddress, POOL_ADDRESS);
-      if (allowance < ethers.parseUnits(amount, tokenConfig.decimals)) {
+      if (allowance < amountToSupply) {
         const approveTx = await tokenContract.approve(POOL_ADDRESS, ethers.MaxUint256);
         await approveTx.wait();
+        console.log(`已授权 ${token} 给 Pool 合约`);
       }
       
       // 执行存款
       const tx = await poolContract.supply(
         tokenConfig.address,
-        ethers.parseUnits(amount, tokenConfig.decimals),
+        amountToSupply,
         targetAddress,
         0
       );
@@ -140,7 +148,7 @@ server.tool("supply",
       return {
         content: [{
           type: "text",
-          text: `存款成功!\n交易哈希: ${receipt.hash}\n存入: ${amount} ${token}`
+          text: `存款成功!\n交易哈希: ${receipt.hash}\n存入: ${amount} ${token}\n接收地址: ${targetAddress}`
         }]
       };
     } catch (error) {
@@ -168,10 +176,26 @@ server.tool("borrow",
       const tokenConfig = SUPPORTED_TOKENS[token];
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
+      const amountToBorrow = ethers.parseUnits(amount, tokenConfig.decimals);
       
+      // 检查用户账户数据
+      const {
+        totalCollateralETH,
+        totalDebtETH,
+        availableBorrowsETH,
+        currentLiquidationThreshold,
+        ltv,
+        healthFactor
+      } = await poolContract.getUserAccountData(userAddress);
+      
+      if (availableBorrowsETH < amountToBorrow) {
+        throw new Error(`可借额度不足,需要 ${amount} ${token},当前可借: ${ethers.formatUnits(availableBorrowsETH, tokenConfig.decimals)} ETH`);
+      }
+      
+      // 执行借款
       const tx = await poolContract.borrow(
         tokenConfig.address,
-        ethers.parseUnits(amount, tokenConfig.decimals),
+        amountToBorrow,
         interestRateMode,
         0,
         targetAddress
@@ -181,7 +205,7 @@ server.tool("borrow",
       return {
         content: [{
           type: "text",
-          text: `借款成功!\n交易哈希: ${receipt.hash}\n借出: ${amount} ${token}\n利率模式: ${interestRateMode === 1 ? '稳定' : '浮动'}`
+          text: `借款成功!\n交易哈希: ${receipt.hash}\n借出: ${amount} ${token}\n利率模式: ${interestRateMode === 1 ? '稳定' : '浮动'}\n接收地址: ${targetAddress}`
         }]
       };
     } catch (error) {
@@ -210,17 +234,26 @@ server.tool("repay",
       const tokenContract = new Contract(tokenConfig.address, ERC20_ABI, signer);
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
+      const amountToRepay = ethers.parseUnits(amount, tokenConfig.decimals);
+      
+      // 检查用户余额
+      const userBalance = await tokenContract.balanceOf(userAddress);
+      if (userBalance < amountToRepay) {
+        throw new Error(`余额不足,需要 ${amount} ${token},当前余额: ${ethers.formatUnits(userBalance, tokenConfig.decimals)} ${token}`);
+      }
       
       // 检查授权
       const allowance = await tokenContract.allowance(userAddress, POOL_ADDRESS);
-      if (allowance < ethers.parseUnits(amount, tokenConfig.decimals)) {
+      if (allowance < amountToRepay) {
         const approveTx = await tokenContract.approve(POOL_ADDRESS, ethers.MaxUint256);
         await approveTx.wait();
+        console.log(`已授权 ${token} 给 Pool 合约`);
       }
       
+      // 执行还款
       const tx = await poolContract.repay(
         tokenConfig.address,
-        ethers.parseUnits(amount, tokenConfig.decimals),
+        amountToRepay,
         rateMode,
         targetAddress
       );
@@ -229,7 +262,7 @@ server.tool("repay",
       return {
         content: [{
           type: "text",
-          text: `还款成功!\n交易哈希: ${receipt.hash}\n还款: ${amount} ${token}`
+          text: `还款成功!\n交易哈希: ${receipt.hash}\n还款: ${amount} ${token}\n利率模式: ${rateMode === 1 ? '稳定' : '浮动'}\n还款人: ${targetAddress}`
         }]
       };
     } catch (error) {
@@ -256,10 +289,22 @@ server.tool("withdraw",
       const tokenConfig = SUPPORTED_TOKENS[token];
       const userAddress = await signer.getAddress();
       const targetAddress = to || userAddress;
+      const amountToWithdraw = ethers.parseUnits(amount, tokenConfig.decimals);
       
+      // 检查用户账户数据
+      const {
+        totalCollateralETH,
+        totalDebtETH,
+        availableBorrowsETH,
+        currentLiquidationThreshold,
+        ltv,
+        healthFactor
+      } = await poolContract.getUserAccountData(userAddress);
+      
+      // 执行提款
       const tx = await poolContract.withdraw(
         tokenConfig.address,
-        ethers.parseUnits(amount, tokenConfig.decimals),
+        amountToWithdraw,
         targetAddress
       );
       const receipt = await tx.wait();
@@ -267,7 +312,7 @@ server.tool("withdraw",
       return {
         content: [{
           type: "text",
-          text: `提款成功!\n交易哈希: ${receipt.hash}\n提取: ${amount} ${token}`
+          text: `提款成功!\n交易哈希: ${receipt.hash}\n提取: ${amount} ${token}\n接收地址: ${targetAddress}`
         }]
       };
     } catch (error) {
