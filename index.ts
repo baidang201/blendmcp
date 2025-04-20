@@ -29,10 +29,58 @@ const ERC20_ABI = [
   "function allowance(address owner, address spender) view returns (uint256)"
 ];
 
+// 支持的Token配置
+interface TokenConfig {
+  symbol: string;
+  address: string;
+  decimals: number;
+}
+
+const SUPPORTED_TOKENS: { [key: string]: TokenConfig } = {
+  USDT: {
+    symbol: 'USDT',
+    address: '0x0165878A594ca255338adfa4d48449f69242Eb8F',
+    decimals: 6
+  },
+  DAI: {
+    symbol: 'DAI', 
+    address: '0xa513E6E4b8f2a923D98304ec87F64353C4D5C853',
+    decimals: 18
+  },
+  USDC: {
+    symbol: 'USDC',
+    address: '0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6', 
+    decimals: 6
+  },
+  WETH: {
+    symbol: 'WETH',
+    address: '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318',
+    decimals: 18
+  },
+  WBTC: {
+    symbol: 'WBTC',
+    address: '0x610178dA211FEF7D417bC0e6FeD39F05609AD788',
+    decimals: 8
+  },
+  BLEND: {
+    symbol: 'BLEND',
+    address: '0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e',
+    decimals: 18
+  }
+};
+
 // 合约地址配置
-const POOL_ADDRESS = "YOUR_POOL_ADDRESS";
-const WETH_ADDRESS = "YOUR_WETH_ADDRESS";
-const USDC_ADDRESS = "YOUR_USDC_ADDRESS";
+const POOL_ADDRESS = "0xDC17C27Ae8bE831AF07CC38C02930007060020F4";
+
+// 辅助函数 - 根据token获取精度
+function getTokenDecimals(symbol: string): number {
+  return SUPPORTED_TOKENS[symbol]?.decimals || 18;
+}
+
+// 辅助函数 - 根据token获取地址
+function getTokenAddress(symbol: string): string {
+  return SUPPORTED_TOKENS[symbol]?.address;
+}
 
 // Provider 和合约实例
 let provider: JsonRpcProvider;
@@ -47,8 +95,8 @@ async function initEthers() {
     provider = new JsonRpcProvider("YOUR_RPC_URL");
     signer = await provider.getSigner();
     poolContract = new Contract(POOL_ADDRESS, POOL_ABI, signer);
-    wethContract = new Contract(WETH_ADDRESS, ERC20_ABI, signer);
-    usdcContract = new Contract(USDC_ADDRESS, ERC20_ABI, signer);
+    wethContract = new Contract(getTokenAddress('WETH'), ERC20_ABI, signer);
+    usdcContract = new Contract(getTokenAddress('USDC'), ERC20_ABI, signer);
   } catch (error) {
     console.error("初始化以太坊连接失败:", error);
   }
@@ -60,31 +108,37 @@ initEthers();
 // 存款工具
 server.tool("supply",
   {
-    asset: z.string(),
+    token: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
     amount: z.string(),
     onBehalfOf: z.string().optional()
   },
-  async ({ asset, amount, onBehalfOf }) => {
+  async ({ token, amount, onBehalfOf }) => {
     try {
-      const tokenContract = new Contract(asset, ERC20_ABI, signer);
+      const tokenConfig = SUPPORTED_TOKENS[token];
+      const tokenContract = new Contract(tokenConfig.address, ERC20_ABI, signer);
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
       
       // 检查授权
       const allowance = await tokenContract.allowance(userAddress, POOL_ADDRESS);
-      if (allowance < ethers.parseUnits(amount, 18)) {
+      if (allowance < ethers.parseUnits(amount, tokenConfig.decimals)) {
         const approveTx = await tokenContract.approve(POOL_ADDRESS, ethers.MaxUint256);
         await approveTx.wait();
       }
       
       // 执行存款
-      const tx = await poolContract.supply(asset, ethers.parseUnits(amount, 18), targetAddress, 0);
+      const tx = await poolContract.supply(
+        tokenConfig.address,
+        ethers.parseUnits(amount, tokenConfig.decimals),
+        targetAddress,
+        0
+      );
       const receipt = await tx.wait();
       
       return {
         content: [{
           type: "text",
-          text: `存款成功!\n交易哈希: ${receipt.hash}\n存入金额: ${amount}`
+          text: `存款成功!\n交易哈希: ${receipt.hash}\n存入: ${amount} ${token}`
         }]
       };
     } catch (error) {
@@ -102,19 +156,20 @@ server.tool("supply",
 // 借款工具
 server.tool("borrow",
   {
-    asset: z.string(),
+    token: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
     amount: z.string(),
-    interestRateMode: z.number().min(1).max(2),
+    interestRateMode: z.number().min(1).max(2).describe('1=稳定利率, 2=浮动利率'),
     onBehalfOf: z.string().optional()
   },
-  async ({ asset, amount, interestRateMode, onBehalfOf }) => {
+  async ({ token, amount, interestRateMode, onBehalfOf }) => {
     try {
+      const tokenConfig = SUPPORTED_TOKENS[token];
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
       
       const tx = await poolContract.borrow(
-        asset,
-        ethers.parseUnits(amount, 18),
+        tokenConfig.address,
+        ethers.parseUnits(amount, tokenConfig.decimals),
         interestRateMode,
         0,
         targetAddress
@@ -124,7 +179,7 @@ server.tool("borrow",
       return {
         content: [{
           type: "text",
-          text: `借款成功!\n交易哈希: ${receipt.hash}\n借款金额: ${amount}\n利率模式: ${interestRateMode === 1 ? '稳定' : '浮动'}`
+          text: `借款成功!\n交易哈希: ${receipt.hash}\n借出: ${amount} ${token}\n利率模式: ${interestRateMode === 1 ? '稳定' : '浮动'}`
         }]
       };
     } catch (error) {
@@ -142,27 +197,28 @@ server.tool("borrow",
 // 还款工具
 server.tool("repay",
   {
-    asset: z.string(),
+    token: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
     amount: z.string(),
-    rateMode: z.number().min(1).max(2),
+    rateMode: z.number().min(1).max(2).describe('1=稳定利率, 2=浮动利率'),
     onBehalfOf: z.string().optional()
   },
-  async ({ asset, amount, rateMode, onBehalfOf }) => {
+  async ({ token, amount, rateMode, onBehalfOf }) => {
     try {
-      const tokenContract = new Contract(asset, ERC20_ABI, signer);
+      const tokenConfig = SUPPORTED_TOKENS[token];
+      const tokenContract = new Contract(tokenConfig.address, ERC20_ABI, signer);
       const userAddress = await signer.getAddress();
       const targetAddress = onBehalfOf || userAddress;
       
       // 检查授权
       const allowance = await tokenContract.allowance(userAddress, POOL_ADDRESS);
-      if (allowance < ethers.parseUnits(amount, 18)) {
+      if (allowance < ethers.parseUnits(amount, tokenConfig.decimals)) {
         const approveTx = await tokenContract.approve(POOL_ADDRESS, ethers.MaxUint256);
         await approveTx.wait();
       }
       
       const tx = await poolContract.repay(
-        asset,
-        ethers.parseUnits(amount, 18),
+        tokenConfig.address,
+        ethers.parseUnits(amount, tokenConfig.decimals),
         rateMode,
         targetAddress
       );
@@ -171,7 +227,7 @@ server.tool("repay",
       return {
         content: [{
           type: "text",
-          text: `还款成功!\n交易哈希: ${receipt.hash}\n还款金额: ${amount}`
+          text: `还款成功!\n交易哈希: ${receipt.hash}\n还款: ${amount} ${token}`
         }]
       };
     } catch (error) {
@@ -189,18 +245,19 @@ server.tool("repay",
 // 提款工具
 server.tool("withdraw",
   {
-    asset: z.string(),
+    token: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
     amount: z.string(),
     to: z.string().optional()
   },
-  async ({ asset, amount, to }) => {
+  async ({ token, amount, to }) => {
     try {
+      const tokenConfig = SUPPORTED_TOKENS[token];
       const userAddress = await signer.getAddress();
       const targetAddress = to || userAddress;
       
       const tx = await poolContract.withdraw(
-        asset,
-        ethers.parseUnits(amount, 18),
+        tokenConfig.address,
+        ethers.parseUnits(amount, tokenConfig.decimals),
         targetAddress
       );
       const receipt = await tx.wait();
@@ -208,7 +265,7 @@ server.tool("withdraw",
       return {
         content: [{
           type: "text",
-          text: `提款成功!\n交易哈希: ${receipt.hash}\n提取金额: ${amount}`
+          text: `提款成功!\n交易哈希: ${receipt.hash}\n提取: ${amount} ${token}`
         }]
       };
     } catch (error) {
@@ -226,29 +283,31 @@ server.tool("withdraw",
 // 清算工具
 server.tool("liquidate",
   {
-    collateralAsset: z.string(),
-    debtAsset: z.string(),
+    collateralToken: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
+    debtToken: z.enum(['USDT', 'DAI', 'USDC', 'WETH', 'WBTC', 'BLEND']),
     user: z.string(),
     debtToCover: z.string(),
     receiveAToken: z.boolean()
   },
-  async ({ collateralAsset, debtAsset, user, debtToCover, receiveAToken }) => {
+  async ({ collateralToken, debtToken, user, debtToCover, receiveAToken }) => {
     try {
-      const tokenContract = new Contract(debtAsset, ERC20_ABI, signer);
+      const debtTokenConfig = SUPPORTED_TOKENS[debtToken];
+      const collateralTokenConfig = SUPPORTED_TOKENS[collateralToken];
+      const tokenContract = new Contract(debtTokenConfig.address, ERC20_ABI, signer);
       const userAddress = await signer.getAddress();
       
       // 检查授权
       const allowance = await tokenContract.allowance(userAddress, POOL_ADDRESS);
-      if (allowance < ethers.parseUnits(debtToCover, 18)) {
+      if (allowance < ethers.parseUnits(debtToCover, debtTokenConfig.decimals)) {
         const approveTx = await tokenContract.approve(POOL_ADDRESS, ethers.MaxUint256);
         await approveTx.wait();
       }
       
       const tx = await poolContract.liquidationCall(
-        collateralAsset,
-        debtAsset,
+        collateralTokenConfig.address,
+        debtTokenConfig.address,
         user,
-        ethers.parseUnits(debtToCover, 18),
+        ethers.parseUnits(debtToCover, debtTokenConfig.decimals),
         receiveAToken
       );
       const receipt = await tx.wait();
@@ -256,7 +315,7 @@ server.tool("liquidate",
       return {
         content: [{
           type: "text",
-          text: `清算成功!\n交易哈希: ${receipt.hash}\n清算金额: ${debtToCover}`
+          text: `清算成功!\n交易哈希: ${receipt.hash}\n清算金额: ${debtToCover} ${debtToken}\n抵押品: ${collateralToken}`
         }]
       };
     } catch (error) {
